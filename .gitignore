@@ -1,0 +1,20 @@
+# Virtual environment
+.venv/
+
+# PyInstaller output
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# App config and logs (user-specific)
+hneditor_config.ini
+hneditor.log
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
