@@ -1,6 +1,6 @@
 # Horizon Network Editor
 
-A PySide6 GUI tool for editing portgroup / network-label assignments on VMware Horizon 2312 instant-clone desktop pools and RDS farms.
+A PySide6 GUI tool for editing portgroup / network-label assignments on VMware Horizon 2312 or later instant-clone desktop pools and RDS farms.
 
 ## Features
 
