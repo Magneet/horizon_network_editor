@@ -401,7 +401,7 @@ class NetworkLoadWorker(QThread):
             conn = _connect_pod(pod)
             if conn is None:
                 self.status_updated.emit("Failed to connect to pod")
-                self.data_loaded.emit({'labels': [], 'nics': [], 'current_nics': []})
+                self.data_loaded.emit({'labels': [], 'nics': [], 'current_nics': [], 'nic_warning': ''})
                 return
 
             # Always do a fresh individual GET so we have the complete object.
@@ -452,6 +452,7 @@ class NetworkLoadWorker(QThread):
                 )
 
             nics = []
+            nic_warning = ""
             if base_vm_id and base_snapshot_id and vcenter_id:
                 self.status_updated.emit("Loading network interface cards...")
                 try:
@@ -500,15 +501,26 @@ class NetworkLoadWorker(QThread):
                         except Exception as ve:
                             logger.error(f"v2 VM-only NIC lookup failed: {ve}")
                     if not nics:
-                        self.status_updated.emit(
-                            "Warning: could not load NIC list — configured snapshot may be stale")
+                        nic_warning = (
+                            f"WARNING: Could not retrieve NIC information for base VM "
+                            f"{base_vm_id} (configured snapshot: {base_snapshot_id}).\n"
+                            f"All lookup methods returned 404 — the base VM or all its snapshots "
+                            f"may have been deleted from vCenter.\n"
+                            f"Please check the golden image configuration for this pool/farm "
+                            f"and push a new image before editing network settings."
+                        )
+                        logger.warning(nic_warning)
+            elif not base_vm_id:
+                nic_warning = (
+                    "WARNING: No golden image is configured for this pool/farm "
+                    "(parent_vm_id is missing).\n"
+                    "Please assign a golden image before editing network settings."
+                )
+                logger.warning(nic_warning)
             else:
                 logger.warning(
                     f"Cannot load NICs: parent_vm_id={base_vm_id} "
                     f"base_snapshot_id={base_snapshot_id} vcenter_id={vcenter_id}"
-                )
-                self.status_updated.emit(
-                    "No base VM/snapshot found — pool may not have a deployed image yet"
                 )
 
             conn.hv_disconnect()
@@ -516,11 +528,12 @@ class NetworkLoadWorker(QThread):
                 'labels': labels,
                 'nics': nics,
                 'current_nics': current_nics,
+                'nic_warning': nic_warning,
             })
         except Exception as e:
             logger.error(f"NetworkLoadWorker error: {e}")
             self.status_updated.emit(f"Error loading network config: {e}")
-            self.data_loaded.emit({'labels': [], 'nics': [], 'current_nics': []})
+            self.data_loaded.emit({'labels': [], 'nics': [], 'current_nics': [], 'nic_warning': ''})
 
 
 class ApplyWorker(QThread):
@@ -763,6 +776,7 @@ def _on_vdi_network_loaded(data):
     vdi_nics = data.get('nics', [])
     labels = data.get('labels', [])
     current_nics = data.get('current_nics', [])
+    nic_warning = data.get('nic_warning', '')
 
     label_names = [FROM_GOLDEN_IMAGE] + sorted(l['name'] for l in labels)
     visible = min(len(vdi_nics), MAX_NICS)
@@ -786,10 +800,15 @@ def _on_vdi_network_loaded(data):
             cb.setEnabled(False)
 
     VDI_apply_btn.setEnabled(visible > 0)
-    VDI_status_label.setText(
-        f"Ready — {len(label_names) - 1} portgroup(s) available" if labels
-        else "Ready — no network labels found for this host/cluster"
-    )
+    if nic_warning:
+        VDI_status_label.setText("Cannot load NIC configuration — see details below")
+        current_text = VDI_status_text.toPlainText()
+        VDI_status_text.setPlainText(current_text + "\n\n" + nic_warning)
+    else:
+        VDI_status_label.setText(
+            f"Ready — {len(label_names) - 1} portgroup(s) available" if labels
+            else "Ready — no network labels found for this host/cluster"
+        )
 
 
 def _vdi_apply():
@@ -873,6 +892,7 @@ def _on_rds_network_loaded(data):
     rds_nics = data.get('nics', [])
     labels = data.get('labels', [])
     current_nics = data.get('current_nics', [])
+    nic_warning = data.get('nic_warning', '')
 
     label_names = [FROM_GOLDEN_IMAGE] + sorted(l['name'] for l in labels)
     visible = min(len(rds_nics), MAX_NICS)
@@ -896,10 +916,15 @@ def _on_rds_network_loaded(data):
             cb.setEnabled(False)
 
     RDS_apply_btn.setEnabled(visible > 0)
-    RDS_status_label.setText(
-        f"Ready — {len(label_names) - 1} portgroup(s) available" if labels
-        else "Ready — no network labels found for this host/cluster"
-    )
+    if nic_warning:
+        RDS_status_label.setText("Cannot load NIC configuration — see details below")
+        current_text = RDS_status_text.toPlainText()
+        RDS_status_text.setPlainText(current_text + "\n\n" + nic_warning)
+    else:
+        RDS_status_label.setText(
+            f"Ready — {len(label_names) - 1} portgroup(s) available" if labels
+            else "Ready — no network labels found for this host/cluster"
+        )
 
 
 def _rds_apply():
@@ -947,14 +972,67 @@ def _on_rds_apply_finished(success, msg):
 
 # ── Config tab ────────────────────────────────────────────────────────────────
 
+def _clear_connection_state():
+    """Reset all cached pool/farm data and UI controls.
+
+    Called whenever credentials change so stale data from the previous server
+    is never shown alongside a new connection.
+    """
+    global global_desktop_pools, global_rds_farms, VDI_pool_values, RDS_farm_values
+    global vdi_selected_pool, rds_selected_farm, vdi_nics, rds_nics
+
+    global_desktop_pools.clear()
+    global_rds_farms.clear()
+    VDI_pool_values.clear()
+    RDS_farm_values.clear()
+    vdi_selected_pool = {}
+    rds_selected_farm = {}
+    vdi_nics = []
+    rds_nics = []
+
+    for combo, status_lbl, status_txt, apply_btn, nic_labels, nic_combos, connect_btn in (
+        (VDI_pool_combo, VDI_status_label, VDI_status_text,
+         VDI_apply_btn, VDI_nic_labels, VDI_nic_combos, VDI_connect_btn),
+        (RDS_farm_combo, RDS_status_label, RDS_status_text,
+         RDS_apply_btn, RDS_nic_labels, RDS_nic_combos, RDS_connect_btn),
+    ):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.blockSignals(False)
+        combo.setEnabled(False)
+        status_lbl.setText("")
+        status_txt.setPlainText("")
+        apply_btn.setEnabled(False)
+        connect_btn.setText("Connect")
+        for lbl, cb in zip(nic_labels, nic_combos):
+            lbl.setVisible(False)
+            cb.setVisible(False)
+            cb.setEnabled(False)
+
+    logger.info("Connection state cleared due to configuration change")
+
+
 def _config_save():
     global config_username, config_domain, config_server_name, config_save_password
-    config_username = config_username_tb.text().strip()
-    config_domain = config_domain_tb.text().strip()
-    config_server_name = config_server_tb.currentText().strip()
-    if not all([config_username, config_domain, config_server_name, config_password]):
+
+    new_username = config_username_tb.text().strip()
+    new_domain = config_domain_tb.text().strip()
+    new_server = config_server_tb.currentText().strip()
+
+    if not all([new_username, new_domain, new_server, config_password]):
         config_status_label.setText("Please fill in all fields and set a password first")
         return
+
+    credentials_changed = (
+        new_username != config_username
+        or new_domain != config_domain
+        or new_server != config_server_name
+    )
+
+    config_username = new_username
+    config_domain = new_domain
+    config_server_name = new_server
+
     cfg = configparser.ConfigParser()
     cfg['UserInfo'] = {
         'Username': config_username,
@@ -972,8 +1050,14 @@ def _config_save():
             keyring.set_password(APPLICATION_NAME, config_username, config_password)
         except Exception as e:
             logger.error(f"Failed to save password to keyring: {e}")
-    config_status_label.setText("Configuration saved")
-    logger.info("Configuration saved")
+
+    if credentials_changed:
+        _clear_connection_state()
+        config_status_label.setText("Configuration saved — please reconnect")
+        logger.info("Configuration saved with changed credentials")
+    else:
+        config_status_label.setText("Configuration saved")
+        logger.info("Configuration saved")
 
 
 def _config_test():
