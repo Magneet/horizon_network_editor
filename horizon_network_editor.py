@@ -374,13 +374,20 @@ class ConnectWorker(QThread):
     data_loaded = Signal(dict)
 
     def run(self):
-        data = horizon_app.load_environment_data(
-            config_pods, config_connection_servers,
-            config_username, config_domain, config_password,
-            on_status=lambda msg: self.status_updated.emit(msg),
-            include_vms_snapshots=False,
-        )
-        self.data_loaded.emit(data)
+        try:
+            data = horizon_app.load_environment_data(
+                config_pods, config_connection_servers,
+                config_username, config_domain, config_password,
+                on_status=lambda msg: self.status_updated.emit(msg),
+                include_vms_snapshots=False,
+            )
+            self.data_loaded.emit(data)
+        except horizon_functions.RateLimitError as e:
+            self.status_updated.emit(f"Rate limited: {e}")
+            self.data_loaded.emit({})
+        except Exception as e:
+            self.status_updated.emit(f"Error loading pools/farms: {e}")
+            self.data_loaded.emit({})
 
 
 class NetworkLoadWorker(QThread):
@@ -530,6 +537,10 @@ class NetworkLoadWorker(QThread):
                 'current_nics': current_nics,
                 'nic_warning': nic_warning,
             })
+        except horizon_functions.RateLimitError as e:
+            logger.warning(f"NetworkLoadWorker rate limited: {e}")
+            self.status_updated.emit(f"Rate limited — {e}")
+            self.data_loaded.emit({'labels': [], 'nics': [], 'current_nics': [], 'nic_warning': str(e)})
         except Exception as e:
             logger.error(f"NetworkLoadWorker error: {e}")
             self.status_updated.emit(f"Error loading network config: {e}")
@@ -614,6 +625,9 @@ class ApplyWorker(QThread):
             conn.hv_disconnect()
             logger.info(msg)
             self.finished.emit(True, msg)
+        except horizon_functions.RateLimitError as e:
+            logger.warning(f"ApplyWorker rate limited: {e}")
+            self.finished.emit(False, f"Rate limited — {e}")
         except Exception as e:
             logger.error(f"ApplyWorker error: {e}")
             self.finished.emit(False, f"Error: {e}")

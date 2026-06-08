@@ -1,4 +1,5 @@
 import json
+import math
 import requests
 import urllib
 import time
@@ -8,21 +9,36 @@ REQUEST_TIMEOUT = 30
 _MAX_RETRIES = 5
 
 
+class RateLimitError(Exception):
+    """Raised when Horizon keeps returning 429 after all retries are exhausted."""
+
+
 def _make_request(func, url: str, **kwargs) -> requests.Response:
     """Wraps a requests call with automatic retry on HTTP 429 (rate-limited).
 
     Reads X-Rate-Limit-Retry-After-Seconds from the response header to
-    determine how long to wait before each retry.
+    determine how long to wait before each retry. Raises RateLimitError if
+    the API keeps returning 429 after _MAX_RETRIES attempts.
     """
     logger.debug(f"[{func.__name__}] {url}")
-    for _ in range(_MAX_RETRIES):
+    for attempt in range(_MAX_RETRIES):
         response = func(url, **kwargs)
         if response.status_code != 429:
             return response
-        retry_after = int(response.headers.get('X-Rate-Limit-Retry-After-Seconds', 5))
-        logger.warning(f"Rate limited (429), retrying after {retry_after}s: {url}")
+        raw = response.headers.get('X-Rate-Limit-Retry-After-Seconds', '5')
+        try:
+            retry_after = math.ceil(float(raw))
+        except (ValueError, TypeError):
+            retry_after = 5
+        logger.warning(
+            f"Rate limited (429), attempt {attempt + 1}/{_MAX_RETRIES}, "
+            f"retrying after {retry_after}s: {url}"
+        )
         time.sleep(retry_after)
-    return response
+    raise RateLimitError(
+        f"Horizon rate limit exceeded after {_MAX_RETRIES} retries — "
+        "the server is busy. Wait a moment and try again."
+    )
 
 
 def _get(url: str, **kwargs) -> requests.Response:
