@@ -4,12 +4,13 @@ A PySide6 GUI tool for editing portgroup / network-label assignments on VMware H
 
 ## Features
 
-- Browse all instant-clone VDI pools and RDS farms across all pods
+- Overview grid showing all VDI pools or RDS farms at a glance — name, display name, enabled state, and current network assignments
+- Click any row in the overview to load that pool/farm for editing, or use the dropdown selector
 - Per-NIC multi-select portgroup assignment (or revert to **From Golden Image**)
 - Enable provisioning and optionally delete all machines/servers after a network change so they redeploy with the new portgroup
 - Handles stale snapshot references — falls back to the v2 NIC API which only needs the base VM, no snapshot
 - Credentials stored via OS keyring; config saved to `hneditor_config.ini`
-- Builds to a self-contained `.app` (macOS) or `.exe` folder (Windows) via PyInstaller
+- Builds to a self-contained `.app` (macOS), `.exe` folder (Windows), or binary folder (Linux) via PyInstaller
 
 ## Pre-built binaries
 
@@ -19,8 +20,11 @@ If you just want to run the tool without Python or any build steps, grab the pre
 |----------|----------|---------------------------|
 | macOS    | `Horizon.Network.Editor-mac.zip` | `Horizon Network Editor.app` — double-click to open |
 | Windows  | `Horizon.Network.Editor-win.zip` | `Horizon Network Editor\Horizon Network Editor.exe` — double-click to run |
+| Linux    | `Horizon.Network.Editor-linux.zip` | `Horizon Network Editor/Horizon Network Editor` — run from terminal |
 
 > **macOS note:** on first launch macOS may show a security warning because the app is not notarized. Right-click (or Control-click) the `.app` and choose **Open**, then confirm in the dialog. You only need to do this once.
+
+> **Linux note:** passwords are stored via SecretService (GNOME Keyring / KWallet). If neither is running, the app still works but will prompt for a password every session.
 
 ## Requirements (running from source)
 
@@ -100,6 +104,36 @@ To distribute, zip the entire output folder (the `.exe` alone will not work with
 powershell Compress-Archive -Path "dist\Horizon Network Editor" -DestinationPath "Horizon.Network.Editor-win.zip"
 ```
 
+### Linux — produces `dist/Horizon Network Editor/`
+
+**Prerequisites:** Python 3.11+, and `libxcb` / Qt6 platform dependencies (usually already present on a desktop Linux install). For persistent password storage, also install `secretstorage` and `jeepney`:
+
+```bash
+pip install secretstorage jeepney
+```
+
+```bash
+bash build_linux.sh
+```
+
+The script will:
+1. Create a `.venv` virtual environment (if one doesn't exist)
+2. Install all dependencies including PyInstaller
+3. Run PyInstaller with the bundled spec file
+
+Output: `dist/Horizon Network Editor/` folder containing the `Horizon Network Editor` binary and all required libraries.
+
+To run immediately after building:
+```bash
+"dist/Horizon Network Editor/Horizon Network Editor"
+```
+
+To distribute, zip the entire output folder:
+```bash
+cd dist
+zip -r "Horizon.Network.Editor-linux.zip" "Horizon Network Editor"
+```
+
 ## Configuration
 
 On first run, go to the **Configuration** tab:
@@ -114,8 +148,8 @@ On first run, go to the **Configuration** tab:
 
 ### VDI Pools tab
 
-1. Click **Connect** — the tool logs in and lists all instant-clone desktop pools
-2. Select a pool from the dropdown
+1. Click **Connect** — the tool logs in, lists all instant-clone desktop pools, and populates the overview table
+2. Click a row in the overview table **or** select from the **Desktop Pool** dropdown to load that pool's NIC configuration
 3. The current portgroup assignments are pre-selected in each NIC row
 4. Click the NIC dropdown and check one or more portgroups:
    - **From Golden Image** — inherit the portgroup from the base VM (exclusive with named portgroups)
@@ -123,15 +157,15 @@ On first run, go to the **Configuration** tab:
 5. Optionally check:
    - **Enable provisioning after saving** — re-enables provisioning on the pool if it was disabled
    - **Delete all machines after saving** — force-deletes all machines in the pool so they redeploy with the new network assignment
-6. Click **Apply Network Changes**
+6. Click **Apply Network Changes** — the overview table updates automatically to reflect the new assignment
 
 ### RDS Farms tab
 
-Works the same way as VDI Pools but targets RDS server farms. The **Delete all machines** option removes all RDS servers, which forces Horizon to recreate them on the new portgroup.
+Works the same way as VDI Pools but targets RDS server farms. The **Delete all servers** option removes all RDS servers, which forces Horizon to recreate them on the new portgroup.
 
-### Status area
+### Status bar
 
-The text area at the bottom of each tab shows progress and any warnings:
+The status line at the top of each tab shows progress and any warnings:
 
 - **NIC warning** — shown when the golden image or base VM is missing or misconfigured in vCenter. The network assignment cannot be loaded; fix the pool/farm configuration first.
 - **Rate limited** — shown when Horizon's REST API returns too many requests (HTTP 429). The tool retries automatically up to 5 times; if it still fails, wait a moment and click Connect again.
@@ -144,3 +178,4 @@ The text area at the bottom of each tab shows progress and any warnings:
 | "Rate limited" message | Too many API requests in a short window | Wait 30–60 seconds and click Connect again |
 | macOS security warning on first launch | App is unsigned / not notarized | Right-click → Open → Open (one-time) |
 | Machines not redeploying after network change | Provisioning is disabled on the pool | Check **Enable provisioning after saving** before applying |
+| Linux: password not saved between sessions | SecretService (GNOME Keyring / KWallet) not running | Start your desktop keyring daemon, or set the password each run |

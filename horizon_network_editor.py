@@ -11,7 +11,8 @@ import json
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget,
     QPushButton, QLabel, QComboBox, QLineEdit, QCheckBox,
-    QPlainTextEdit, QInputDialog,
+    QPlainTextEdit, QInputDialog, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QHeaderView,
 )
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QIcon, QStandardItemModel, QStandardItem
@@ -294,48 +295,58 @@ def _make_farm_update_body(farm, new_nics):
     return body
 
 
-def _pool_status_text(pool):
-    nics = pool.get('nics') or []
-    nic_lines = []
+def _networks_summary(nics):
+    if not nics:
+        return FROM_GOLDEN_IMAGE
+    parts = []
     for nic in nics:
         specs = nic.get('network_label_assignment_specs') or []
-        if specs:
-            pgs = ', '.join(s.get('network_label_name', '?') for s in specs)
-        else:
-            pgs = FROM_GOLDEN_IMAGE
         name = nic.get('network_interface_card_name') or nic.get('network_interface_card_id', '?')
-        nic_lines.append(f"  {name}: {pgs}")
-    if not nic_lines:
-        nic_lines = [f"  All NICs: {FROM_GOLDEN_IMAGE}"]
-    ps = pool.get('provisioning_settings', {})
+        pgs = ', '.join(s.get('network_label_name', '?') for s in specs) if specs else FROM_GOLDEN_IMAGE
+        parts.append(f"{name}: {pgs}")
+    return '  |  '.join(parts)
+
+
+def _pool_table_values(pool):
     return (
-        f"Pool: {pool.get('name', 'N/A')}  |  "
-        f"Display: {pool.get('display_name', 'N/A')}  |  "
-        f"Enabled: {pool.get('enabled', 'N/A')}\n"
-        f"Current network assignments:\n" + '\n'.join(nic_lines)
+        pool.get('name', 'N/A'),
+        pool.get('display_name', 'N/A'),
+        'Yes' if pool.get('enabled') else 'No',
+        _networks_summary(pool.get('nics') or []),
     )
 
 
-def _farm_status_text(farm):
+def _farm_table_values(farm):
     afs = farm.get('automated_farm_settings', {})
-    nics = afs.get('nics') or []
-    nic_lines = []
-    for nic in nics:
-        specs = nic.get('network_label_assignment_specs') or []
-        if specs:
-            pgs = ', '.join(s.get('network_label_name', '?') for s in specs)
-        else:
-            pgs = FROM_GOLDEN_IMAGE
-        name = nic.get('network_interface_card_name') or nic.get('network_interface_card_id', '?')
-        nic_lines.append(f"  {name}: {pgs}")
-    if not nic_lines:
-        nic_lines = [f"  All NICs: {FROM_GOLDEN_IMAGE}"]
     return (
-        f"Farm: {farm.get('name', 'N/A')}  |  "
-        f"Display: {farm.get('display_name', 'N/A')}  |  "
-        f"Enabled: {farm.get('enabled', 'N/A')}\n"
-        f"Current network assignments:\n" + '\n'.join(nic_lines)
+        farm.get('name', 'N/A'),
+        farm.get('display_name', 'N/A'),
+        'Yes' if farm.get('enabled') else 'No',
+        _networks_summary(afs.get('nics') or []),
     )
+
+
+def _fill_table(table, rows):
+    table.blockSignals(True)
+    table.setRowCount(len(rows))
+    for r, row_vals in enumerate(rows):
+        for c, text in enumerate(row_vals):
+            item = QTableWidgetItem(str(text))
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(r, c, item)
+    table.resizeRowsToContents()
+    table.blockSignals(False)
+
+
+def _update_table_row(table, name, row_vals):
+    for r in range(table.rowCount()):
+        cell = table.item(r, 0)
+        if cell and cell.text() == name:
+            for c, text in enumerate(row_vals):
+                item = table.item(r, c)
+                if item:
+                    item.setText(str(text))
+            break
 
 
 def bind_combobox_search(cb):
@@ -722,6 +733,7 @@ def _on_connect_finished(data):
         VDI_pool_combo.addItems(names)
         VDI_pool_combo.blockSignals(False)
         VDI_pool_combo.setEnabled(True)
+        _fill_table(VDI_pool_table, [_pool_table_values(p) for p in global_desktop_pools])
         VDI_pool_combo.setCurrentIndex(0)
         VDI_status_label.setText("Connected")
         _vdi_pool_selected(None)
@@ -736,6 +748,7 @@ def _on_connect_finished(data):
         RDS_farm_combo.addItems(names)
         RDS_farm_combo.blockSignals(False)
         RDS_farm_combo.setEnabled(True)
+        _fill_table(RDS_farm_table, [_farm_table_values(f) for f in global_rds_farms])
         RDS_farm_combo.setCurrentIndex(0)
         RDS_status_label.setText("Connected")
         _rds_farm_selected(None)
@@ -746,6 +759,30 @@ def _on_connect_finished(data):
     RDS_connect_btn.setText("Refresh")
     VDI_connect_btn.setEnabled(True)
     RDS_connect_btn.setEnabled(True)
+
+
+def _on_vdi_table_selection_changed():
+    items = VDI_pool_table.selectedItems()
+    if not items:
+        return
+    name = VDI_pool_table.item(items[0].row(), 0).text()
+    if name in VDI_pool_values and name != VDI_pool_combo.currentText():
+        VDI_pool_combo.blockSignals(True)
+        VDI_pool_combo.setCurrentText(name)
+        VDI_pool_combo.blockSignals(False)
+        _vdi_pool_selected(None)
+
+
+def _on_rds_table_selection_changed():
+    items = RDS_farm_table.selectedItems()
+    if not items:
+        return
+    name = RDS_farm_table.item(items[0].row(), 0).text()
+    if name in RDS_farm_values and name != RDS_farm_combo.currentText():
+        RDS_farm_combo.blockSignals(True)
+        RDS_farm_combo.setCurrentText(name)
+        RDS_farm_combo.blockSignals(False)
+        _rds_farm_selected(None)
 
 
 # ── VDI tab ───────────────────────────────────────────────────────────────────
@@ -776,7 +813,13 @@ def _vdi_pool_selected(_):
         except RuntimeError:
             pass
     _vdi_disable_controls()
-    VDI_status_text.setPlainText(_pool_status_text(vdi_selected_pool))
+    for r in range(VDI_pool_table.rowCount()):
+        item = VDI_pool_table.item(r, 0)
+        if item and item.text() == name:
+            VDI_pool_table.blockSignals(True)
+            VDI_pool_table.selectRow(r)
+            VDI_pool_table.blockSignals(False)
+            break
 
     _vdi_net_worker = NetworkLoadWorker(vdi_selected_pool, is_farm=False)
     _track_worker(_vdi_net_worker)
@@ -815,9 +858,7 @@ def _on_vdi_network_loaded(data):
 
     VDI_apply_btn.setEnabled(visible > 0)
     if nic_warning:
-        VDI_status_label.setText("Cannot load NIC configuration — see details below")
-        current_text = VDI_status_text.toPlainText()
-        VDI_status_text.setPlainText(current_text + "\n\n" + nic_warning)
+        VDI_status_label.setText(f"Cannot load NIC configuration: {nic_warning}")
     else:
         VDI_status_label.setText(
             f"Ready — {len(label_names) - 1} portgroup(s) available" if labels
@@ -863,7 +904,8 @@ def _on_vdi_apply_finished(success, msg):
                     'network_interface_card_name': nic.get('name', ''),
                     'network_label_assignment_specs': new_specs,
                 })
-        VDI_status_text.setPlainText(_pool_status_text(vdi_selected_pool))
+        _update_table_row(VDI_pool_table, vdi_selected_pool.get('name', ''),
+                          _pool_table_values(vdi_selected_pool))
 
 
 # ── RDS tab ───────────────────────────────────────────────────────────────────
@@ -892,7 +934,13 @@ def _rds_farm_selected(_):
         except RuntimeError:
             pass
     _rds_disable_controls()
-    RDS_status_text.setPlainText(_farm_status_text(rds_selected_farm))
+    for r in range(RDS_farm_table.rowCount()):
+        item = RDS_farm_table.item(r, 0)
+        if item and item.text() == name:
+            RDS_farm_table.blockSignals(True)
+            RDS_farm_table.selectRow(r)
+            RDS_farm_table.blockSignals(False)
+            break
 
     _rds_net_worker = NetworkLoadWorker(rds_selected_farm, is_farm=True)
     _track_worker(_rds_net_worker)
@@ -931,9 +979,7 @@ def _on_rds_network_loaded(data):
 
     RDS_apply_btn.setEnabled(visible > 0)
     if nic_warning:
-        RDS_status_label.setText("Cannot load NIC configuration — see details below")
-        current_text = RDS_status_text.toPlainText()
-        RDS_status_text.setPlainText(current_text + "\n\n" + nic_warning)
+        RDS_status_label.setText(f"Cannot load NIC configuration: {nic_warning}")
     else:
         RDS_status_label.setText(
             f"Ready — {len(label_names) - 1} portgroup(s) available" if labels
@@ -981,7 +1027,8 @@ def _on_rds_apply_finished(success, msg):
                     'network_interface_card_name': nic.get('name', ''),
                     'network_label_assignment_specs': new_specs,
                 })
-        RDS_status_text.setPlainText(_farm_status_text(rds_selected_farm))
+        _update_table_row(RDS_farm_table, rds_selected_farm.get('name', ''),
+                          _farm_table_values(rds_selected_farm))
 
 
 # ── Config tab ────────────────────────────────────────────────────────────────
@@ -1004,10 +1051,10 @@ def _clear_connection_state():
     vdi_nics = []
     rds_nics = []
 
-    for combo, status_lbl, status_txt, apply_btn, nic_labels, nic_combos, connect_btn in (
-        (VDI_pool_combo, VDI_status_label, VDI_status_text,
+    for combo, status_lbl, table, apply_btn, nic_labels, nic_combos, connect_btn in (
+        (VDI_pool_combo, VDI_status_label, VDI_pool_table,
          VDI_apply_btn, VDI_nic_labels, VDI_nic_combos, VDI_connect_btn),
-        (RDS_farm_combo, RDS_status_label, RDS_status_text,
+        (RDS_farm_combo, RDS_status_label, RDS_farm_table,
          RDS_apply_btn, RDS_nic_labels, RDS_nic_combos, RDS_connect_btn),
     ):
         combo.blockSignals(True)
@@ -1015,7 +1062,8 @@ def _clear_connection_state():
         combo.blockSignals(False)
         combo.setEnabled(False)
         status_lbl.setText("")
-        status_txt.setPlainText("")
+        table.clearContents()
+        table.setRowCount(0)
         apply_btn.setEnabled(False)
         connect_btn.setText("Connect")
         for lbl, cb in zip(nic_labels, nic_combos):
@@ -1120,7 +1168,7 @@ app.setStyle("Fusion")
 
 window = QMainWindow()
 window.setWindowTitle("Horizon Network Editor")
-window.setFixedSize(780, 480)
+window.setFixedSize(780, 530)
 
 logo_path = resource_path("logo.ico")
 if os.path.isfile(logo_path):
@@ -1140,23 +1188,33 @@ VDI_connect_btn.clicked.connect(_generic_connect)
 VDI_status_label = QLabel("", tab_vdi)
 VDI_status_label.setGeometry(140, 13, 620, 20)
 
-QLabel("Desktop Pool:", tab_vdi).setGeometry(10, 45, 100, 20)
+VDI_pool_table = QTableWidget(tab_vdi)
+VDI_pool_table.setGeometry(10, 40, 757, 160)
+VDI_pool_table.setColumnCount(4)
+VDI_pool_table.setHorizontalHeaderLabels(["Name", "Display Name", "Enabled", "Networks"])
+VDI_pool_table.horizontalHeader().setStretchLastSection(True)
+VDI_pool_table.setColumnWidth(0, 150)
+VDI_pool_table.setColumnWidth(1, 150)
+VDI_pool_table.setColumnWidth(2, 55)
+VDI_pool_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+VDI_pool_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+VDI_pool_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+VDI_pool_table.verticalHeader().setVisible(False)
+VDI_pool_table.itemSelectionChanged.connect(_on_vdi_table_selection_changed)
+
+QLabel("Desktop Pool:", tab_vdi).setGeometry(10, 210, 100, 20)
 VDI_pool_combo = QComboBox(tab_vdi)
-VDI_pool_combo.setGeometry(10, 65, 560, 25)
+VDI_pool_combo.setGeometry(10, 230, 560, 25)
 VDI_pool_combo.setEnabled(False)
 bind_combobox_search(VDI_pool_combo)
 VDI_pool_combo.currentIndexChanged.connect(lambda _: _vdi_pool_selected(None))
 
-VDI_status_text = QPlainTextEdit(tab_vdi)
-VDI_status_text.setGeometry(10, 100, 757, 90)
-VDI_status_text.setReadOnly(True)
-
-QLabel("Network Configuration:", tab_vdi).setGeometry(10, 200, 200, 20)
+QLabel("Network Configuration:", tab_vdi).setGeometry(10, 265, 200, 20)
 
 VDI_nic_labels = []
 VDI_nic_combos = []
 for _i in range(MAX_NICS):
-    _y = 223 + _i * 33
+    _y = 288 + _i * 33
     _lbl = QLabel(f"NIC {_i + 1}:", tab_vdi)
     _lbl.setGeometry(10, _y, 160, 25)
     _lbl.setVisible(False)
@@ -1168,13 +1226,13 @@ for _i in range(MAX_NICS):
     VDI_nic_combos.append(_cb)
 
 VDI_enable_prov_cb = QCheckBox("Enable provisioning after saving", tab_vdi)
-VDI_enable_prov_cb.setGeometry(10, 356, 280, 22)
+VDI_enable_prov_cb.setGeometry(10, 406, 280, 22)
 
 VDI_delete_machines_cb = QCheckBox("Delete all machines after saving (forces redeploy with new network)", tab_vdi)
-VDI_delete_machines_cb.setGeometry(10, 378, 500, 22)
+VDI_delete_machines_cb.setGeometry(10, 430, 500, 22)
 
 VDI_apply_btn = QPushButton("Apply Network Changes", tab_vdi)
-VDI_apply_btn.setGeometry(10, 408, 200, 30)
+VDI_apply_btn.setGeometry(10, 456, 200, 30)
 VDI_apply_btn.setEnabled(False)
 VDI_apply_btn.clicked.connect(_vdi_apply)
 
@@ -1189,23 +1247,33 @@ RDS_connect_btn.clicked.connect(_generic_connect)
 RDS_status_label = QLabel("", tab_rds)
 RDS_status_label.setGeometry(140, 13, 620, 20)
 
-QLabel("RDS Farm:", tab_rds).setGeometry(10, 45, 100, 20)
+RDS_farm_table = QTableWidget(tab_rds)
+RDS_farm_table.setGeometry(10, 40, 757, 160)
+RDS_farm_table.setColumnCount(4)
+RDS_farm_table.setHorizontalHeaderLabels(["Name", "Display Name", "Enabled", "Networks"])
+RDS_farm_table.horizontalHeader().setStretchLastSection(True)
+RDS_farm_table.setColumnWidth(0, 150)
+RDS_farm_table.setColumnWidth(1, 150)
+RDS_farm_table.setColumnWidth(2, 55)
+RDS_farm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+RDS_farm_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+RDS_farm_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+RDS_farm_table.verticalHeader().setVisible(False)
+RDS_farm_table.itemSelectionChanged.connect(_on_rds_table_selection_changed)
+
+QLabel("RDS Farm:", tab_rds).setGeometry(10, 210, 100, 20)
 RDS_farm_combo = QComboBox(tab_rds)
-RDS_farm_combo.setGeometry(10, 65, 560, 25)
+RDS_farm_combo.setGeometry(10, 230, 560, 25)
 RDS_farm_combo.setEnabled(False)
 bind_combobox_search(RDS_farm_combo)
 RDS_farm_combo.currentIndexChanged.connect(lambda _: _rds_farm_selected(None))
 
-RDS_status_text = QPlainTextEdit(tab_rds)
-RDS_status_text.setGeometry(10, 100, 757, 90)
-RDS_status_text.setReadOnly(True)
-
-QLabel("Network Configuration:", tab_rds).setGeometry(10, 200, 200, 20)
+QLabel("Network Configuration:", tab_rds).setGeometry(10, 265, 200, 20)
 
 RDS_nic_labels = []
 RDS_nic_combos = []
 for _i in range(MAX_NICS):
-    _y = 223 + _i * 33
+    _y = 288 + _i * 33
     _lbl = QLabel(f"NIC {_i + 1}:", tab_rds)
     _lbl.setGeometry(10, _y, 160, 25)
     _lbl.setVisible(False)
@@ -1217,13 +1285,13 @@ for _i in range(MAX_NICS):
     RDS_nic_combos.append(_cb)
 
 RDS_enable_prov_cb = QCheckBox("Enable provisioning after saving", tab_rds)
-RDS_enable_prov_cb.setGeometry(10, 356, 280, 22)
+RDS_enable_prov_cb.setGeometry(10, 406, 280, 22)
 
 RDS_delete_machines_cb = QCheckBox("Delete all servers after saving (forces redeploy with new network)", tab_rds)
-RDS_delete_machines_cb.setGeometry(10, 378, 500, 22)
+RDS_delete_machines_cb.setGeometry(10, 430, 500, 22)
 
 RDS_apply_btn = QPushButton("Apply Network Changes", tab_rds)
-RDS_apply_btn.setGeometry(10, 408, 200, 30)
+RDS_apply_btn.setGeometry(10, 456, 200, 30)
 RDS_apply_btn.setEnabled(False)
 RDS_apply_btn.clicked.connect(_rds_apply)
 
